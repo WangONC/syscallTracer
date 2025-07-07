@@ -52,6 +52,7 @@ struct {
     int show_absolute; // Show absolute addresses
     int show_relative; // Show relative addresses
     int show_backtrace; // Show call stack
+    int verbose; // Verbose output
     struct module_info modules[MAX_MODULES]; // Modules of the pid
     int module_count;
 } config;
@@ -525,10 +526,12 @@ void load_module_info(pid_t pid) {
                         module->start_addr = temp_modules[i].start_addr;
                         module->end_addr = temp_modules[i].end_addr;
                         module->offset = temp_modules[i].offset;
-                        printf("New module loaded: %s (0x%llx - 0x%llx) "
-                                "offset 0x%llx\n",
-                                module->name, module->start_addr,
-                                module->end_addr, module->offset);
+                        if (config.verbose) {
+                            printf("New module loaded: %s (0x%llx - 0x%llx) "
+                                    "offset 0x%llx\n",
+                                    module->name, module->start_addr,
+                                    module->end_addr, module->offset);
+                        }
                     } else {
                         fprintf(stderr, "Module list full; cannot add more.\n");
                     }
@@ -604,12 +607,13 @@ void print_usage(const char* program_name) {
     fprintf(stderr, "  -a                 Show absolute address\n");
     fprintf(stderr, "  -r                 Show relative address\n");
     fprintf(stderr, "  -b                 Show backtrace\n");
+    fprintf(stderr, "  -v                 Verbose output\n");
     fprintf(stderr, "  -h                 Show this help message\n");
 }
 
 void parse_args(int argc, char *argv[]) {
     int opt;
-    while ((opt = getopt(argc, argv, "p:s:n:e:arbh")) != -1) {
+    while ((opt = getopt(argc, argv, "p:s:n:e:arbvh")) != -1) {
         switch (opt) {
             case 'p':
                 config.pid = atoi(optarg);
@@ -636,6 +640,9 @@ void parse_args(int argc, char *argv[]) {
                 break;
             case 'b':
                 config.show_backtrace = 1;
+                break;
+            case 'v':
+                config.verbose = 1;
                 break;
             case 'h':
                 print_usage(argv[0]);
@@ -700,6 +707,12 @@ void print_backtrace(pid_t pid, unsigned long long fp, unsigned long long sp, un
         // Print the LR and its relative address
         get_relative_address(saved_lr, buf, sizeof(buf));
         printf("  [%d] 0x%llx %s\n", i, saved_lr, buf);
+        
+        // Debug: print raw values to understand the issue
+        if (config.verbose) {
+            printf("    [DEBUG] saved_fp=0x%llx, saved_lr=0x%llx, current_fp=0x%llx\n", 
+                   saved_fp, saved_lr, current_fp);
+        }
 
         // Check for infinite loops
         if (saved_fp == current_fp) {
@@ -720,6 +733,12 @@ void handle_syscall(pid_t tid, int entering) {
     struct user_pt_regs regs;
     if(!ptraceGetRegs(tid, &regs)) return; // reason???
     long syscall_number = regs.regs[8];  // x8 register holds the syscall number on ARM64
+    
+    // Check for potential module loading BEFORE handling syscall
+    // This ensures we have the most up-to-date module information
+    if (entering && (syscall_number == 222 || syscall_number == 221)) { // arm64 mmap or execve
+        load_module_info(config.pid);
+    }
     
     if (is_target_syscall(syscall_number) || config.syscall_count == 0) {
         char line[512];
@@ -745,8 +764,8 @@ void handle_syscall(pid_t tid, int entering) {
         }
     }
 
-    // Check for potential module loading
-    if (entering && syscall_number == 222) { // arm64 mmap
+    // Also check after syscall exit for some operations
+    if (!entering && (syscall_number == 222 || syscall_number == 221)) { // arm64 mmap or execve
         load_module_info(config.pid);
     }
 }
@@ -925,7 +944,8 @@ int main(int argc, char *argv[]) {
             int sig = WSTOPSIG(status);
 
             if (sig == (SIGTRAP | 0x80)) {
-                // Syscall stop
+                // Syscall stop - check for module changes first
+                load_module_info(config.pid);
                 handle_syscall(pid, tinfo->syscall_enter);
                 tinfo->syscall_enter = !tinfo->syscall_enter;
             } else if (sig == SIGTRAP) {

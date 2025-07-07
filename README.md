@@ -49,6 +49,7 @@ Options:
   -a                 Show absolute address
   -r                 Show relative address
   -b                 Show backtrace
+  -v                 Verbose output
   -h                 Show this help message
 ```
 

@@ -691,7 +691,7 @@ void print_backtrace(pid_t pid, unsigned long long fp, unsigned long long sp, un
         }
 
         // 8-byte aligned on ARM64
-        if (saved_fp % 8 != 0 && saved_lr % 8 != 0) return false;
+        if (saved_fp % 8 != 0 && saved_lr % 8 != 0) return;
 
         // Check if saved LR is non-zero
         if (saved_lr == 0) break;
